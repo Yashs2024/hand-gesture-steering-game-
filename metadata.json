@@ -1,0 +1,7 @@
+{
+  "name": "Virtual Steering Racer",
+  "description": "A high-octane racing game controlled by hand gestures using computer vision. Hold an invisible steering wheel to drive!",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
