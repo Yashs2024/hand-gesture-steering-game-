@@ -89,50 +89,26 @@ const WebcamController: React.FC<WebcamControllerProps> = ({ onControlUpdate, is
             
             // Logic for 2 hands (Steering)
             if (results.landmarks.length === 2) {
-              // We need to identify Left vs Right.
-              // MediaPipe MultiHandLandmarker often returns handedness, but strictly by X coordinate is robust for a driver facing camera.
-              // The hand on the "Left" of the raw image (x < 0.5) is the user's Right Hand if mirrored?
-              // Let's rely on x-sorting. 
-              // Raw Video: User's Right hand is on the LEFT side of the image (low x).
-              // User's Left hand is on the RIGHT side of the image (high x).
-              
               const sortedHands = [...results.landmarks].sort((a, b) => a[9].x - b[9].x);
               const rightHandRaw = sortedHands[0]; // Lower X (Left of image) -> User's Right Hand
               const leftHandRaw = sortedHands[1];  // Higher X (Right of image) -> User's Left Hand
 
-              // Wait, calculating steering slope requires consistency.
-              // Let's pass the raw sorted hands.
-              // In the raw frame:
-              // P1 (Right Hand) at x=0.2. P2 (Left Hand) at x=0.8.
-              // User tilts Left (Wheel CCW): Right Hand (P1) goes UP (low y), Left Hand (P2) goes DOWN (high y).
-              // P1.y = 0.3, P2.y = 0.7.
-              // calculateSteering logic: dy = P2.y - P1.y = 0.7 - 0.3 = 0.4.
-              // atan(0.4, 0.6) -> Positive Angle.
-              // So for this sorting, Positive = Left Turn?
-              // Let's correct the service logic or mapping here.
-              // If we pass (LeftHandRaw, RightHandRaw) to the service:
-              // Service expects (LeftHand, RightHand).
-              // User's Left Hand is "leftHandRaw" (High X in raw image).
-              // User's Right Hand is "rightHandRaw" (Low X in raw image).
-              
-              // Let's pass (leftHandRaw, rightHandRaw) -> (UserLeft, UserRight).
               steering = calculateSteering(leftHandRaw, rightHandRaw); 
-              // Note: If I pass them in this order, the math in service needs to match.
-              // Service: dy = Right.y - Left.y.
-              // Turn Left Case: Right(UP/0.3) - Left(DOWN/0.7) = -0.4.
-              // Result: Negative.
-              // So Negative = Left Turn. This matches the service logic. Good.
-
-              // Throttle: Use Right Hand (rightHandRaw)
               throttle = calculateThrottle(rightHandRaw);
               debugMsg = "Drive Mode";
 
               // Visuals
-              drawVirtualWheel(ctx, leftHandRaw, rightHandRaw, canvas.width, canvas.height, steering);
+              drawRealisticWheel(ctx, leftHandRaw, rightHandRaw, canvas.width, canvas.height, steering);
+              
             } else if (results.landmarks.length === 1) {
               debugMsg = "Need 2 Hands";
               drawHandDebug(ctx, results.landmarks[0], canvas.width, canvas.height);
             }
+          }
+          
+          // Always draw HUD (Speedometer) if tracking
+          if (handsDetected === 2) {
+             drawSpeedometer(ctx, canvas.width, canvas.height, throttle);
           }
 
           ctx.restore();
@@ -157,8 +133,8 @@ const WebcamController: React.FC<WebcamControllerProps> = ({ onControlUpdate, is
   }, [isActive, loading, cameraPermission, onControlUpdate]);
 
 
-  // Helper to draw the virtual wheel
-  const drawVirtualWheel = (
+  // Draw a cool sci-fi steering yoke
+  const drawRealisticWheel = (
     ctx: CanvasRenderingContext2D, 
     leftHand: any[], 
     rightHand: any[], 
@@ -169,46 +145,120 @@ const WebcamController: React.FC<WebcamControllerProps> = ({ onControlUpdate, is
     const l = { x: leftHand[9].x * w, y: leftHand[9].y * h };
     const r = { x: rightHand[9].x * w, y: rightHand[9].y * h };
 
-    // Line connecting hands
-    ctx.beginPath();
-    ctx.strokeStyle = "rgba(0, 255, 255, 0.5)";
-    ctx.lineWidth = 4;
-    ctx.moveTo(l.x, l.y);
-    ctx.lineTo(r.x, r.y);
-    ctx.stroke();
-
-    // Hands
-    ctx.fillStyle = "#00FFFF";
-    ctx.beginPath();
-    ctx.arc(l.x, l.y, 10, 0, 2 * Math.PI);
-    ctx.arc(r.x, r.y, 10, 0, 2 * Math.PI);
-    ctx.fill();
-
-    // Center point
+    // Calculate center and radius
     const cx = (l.x + r.x) / 2;
     const cy = (l.y + r.y) / 2;
+    const dx = r.x - l.x;
+    const dy = r.y - l.y;
+    const diameter = Math.sqrt(dx*dx + dy*dy);
+    const radius = diameter / 2; // Hand to Hand is the diameter roughly
     
-    // Draw arc visualizing steering
+    // Angle of the hands
+    const angle = Math.atan2(dy, dx);
+
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(angle);
+
+    // Glow
+    ctx.shadowBlur = 15;
+    ctx.shadowColor = '#00ffff';
+
+    // 1. Central Hub
     ctx.beginPath();
-    ctx.strokeStyle = steering < -0.2 ? "#FF0055" : (steering > 0.2 ? "#FF0055" : "#00FF00"); // Red if turning hard
-    ctx.lineWidth = 8;
-    // Draw a semi-circle oriented by the steering angle
-    // Base angle is the slope of the line
-    const baseAngle = Math.atan2(r.y - l.y, r.x - l.x);
-    ctx.arc(cx, cy, 60, baseAngle + Math.PI, baseAngle, false); 
+    ctx.arc(0, 0, radius * 0.2, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+    ctx.fill();
+    ctx.strokeStyle = '#00ffff';
+    ctx.lineWidth = 3;
     ctx.stroke();
 
-    // Throttle Indicator (Pinch visual on Right hand)
-    // Draw near Right hand
-    const rThumb = { x: rightHand[4].x * w, y: rightHand[4].y * h };
-    const rIndex = { x: rightHand[8].x * w, y: rightHand[8].y * h };
-    
+    // 2. The Yoke / Rim
+    // We draw a path that looks like a racing wheel (flat top/bottom maybe?) or just a cool ring
     ctx.beginPath();
-    ctx.strokeStyle = "#FFFF00";
-    ctx.lineWidth = 2;
-    ctx.moveTo(rThumb.x, rThumb.y);
-    ctx.lineTo(rIndex.x, rIndex.y);
+    // Left handle arc
+    ctx.arc(0, 0, radius, Math.PI * 0.8, Math.PI * 1.2);
+    // Top bar
+    ctx.moveTo(radius * Math.cos(Math.PI * 1.2), radius * Math.sin(Math.PI * 1.2));
+    ctx.quadraticCurveTo(0, -radius * 0.5, radius * Math.cos(Math.PI * 1.8), radius * Math.sin(Math.PI * 1.8));
+    // Right handle arc
+    ctx.arc(0, 0, radius, Math.PI * 1.8, Math.PI * 2.2);
+    // Bottom bar
+    ctx.moveTo(radius * Math.cos(Math.PI * 2.2), radius * Math.sin(Math.PI * 2.2));
+    ctx.quadraticCurveTo(0, radius * 0.5, radius * Math.cos(Math.PI * 0.8), radius * Math.sin(Math.PI * 0.8));
+    
+    ctx.lineWidth = 8;
+    ctx.strokeStyle = '#00ffff';
     ctx.stroke();
+    
+    // Fill handles slightly
+    ctx.fillStyle = 'rgba(0, 255, 255, 0.1)';
+    ctx.fill();
+
+    // 3. Connectors to Hands
+    ctx.beginPath();
+    ctx.moveTo(-radius * 0.8, 0);
+    ctx.lineTo(radius * 0.8, 0);
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // 4. Hand Grip Indicators
+    // Left
+    ctx.beginPath();
+    ctx.arc(-radius, 0, 15, 0, Math.PI * 2);
+    ctx.fillStyle = '#ff0055';
+    ctx.fill();
+    // Right
+    ctx.beginPath();
+    ctx.arc(radius, 0, 15, 0, Math.PI * 2);
+    ctx.fillStyle = '#ff0055';
+    ctx.fill();
+
+    ctx.restore();
+  };
+
+  const drawSpeedometer = (ctx: CanvasRenderingContext2D, w: number, h: number, throttle: number) => {
+      const cx = w - 80;
+      const cy = h - 60;
+      const r = 50;
+
+      // Background
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, Math.PI * 0.75, Math.PI * 2.25);
+      ctx.lineWidth = 10;
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+      ctx.stroke();
+
+      // Gauge Arc
+      ctx.beginPath();
+      // Map throttle 0-1 to angle
+      const startAngle = Math.PI * 0.75;
+      const totalAngle = Math.PI * 1.5;
+      const endAngle = startAngle + totalAngle * throttle;
+      
+      ctx.arc(cx, cy, r, startAngle, endAngle);
+      ctx.lineWidth = 10;
+      ctx.strokeStyle = `hsl(${180 - throttle * 180}, 100%, 50%)`; // Cyan to Red
+      ctx.lineCap = 'round';
+      ctx.stroke();
+
+      // Text
+      ctx.save();
+      ctx.translate(cx, cy);
+      // Because context is mirrored, we flip text back to readable?
+      // No, as discussed, standard text drawing in mirrored ctx + CSS mirror = Readable.
+      // But alignment might be tricky.
+      
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 24px Orbitron';
+      ctx.fillText(Math.floor(throttle * 100).toString() + '%', 0, 10);
+      
+      ctx.font = '10px Inter';
+      ctx.fillStyle = '#aaa';
+      ctx.fillText('POWER', 0, 25);
+      ctx.restore();
   };
 
   const drawHandDebug = (ctx: CanvasRenderingContext2D, hand: any[], w: number, h: number) => {
@@ -231,7 +281,7 @@ const WebcamController: React.FC<WebcamControllerProps> = ({ onControlUpdate, is
         className="absolute inset-0 w-full h-full object-cover transform scale-x-[-1] opacity-60"
       />
       
-      {/* Overlay Canvas - Also Mirrored via CSS to match video, context logic handles internal coord flip if needed, but here we flipped context instead. */}
+      {/* Overlay Canvas - Also Mirrored via CSS to match video */}
        <canvas
         ref={canvasRef}
         className="absolute inset-0 w-full h-full object-cover transform scale-x-[-1]"
